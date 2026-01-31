@@ -43,10 +43,12 @@ def clip_vectors_to_boundary(
     if gdf.crs != boundary.crs:
         boundary = boundary.to_crs(gdf.crs)
         
-    # clip
-    clipped = gpd.clip(gdf, boundary)
+    # Spatial filter: Keep features that intersect the boundary
+    # This preserves the full geometry of edge buildings instead of cutting them
+    mask = gdf.intersects(boundary.unary_union)
+    filtered = gdf[mask].copy()
     
-    return clipped
+    return filtered
 
 
 # ============================================================

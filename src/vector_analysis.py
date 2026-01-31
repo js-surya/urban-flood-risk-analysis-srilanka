@@ -15,7 +15,38 @@ from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 import numpy as np
 from typing import Optional, Union, List
-import fiona
+
+# ============================================================
+# OPERATION 0: PRE-PROCESSING (CLIPPING)
+# ============================================================
+
+def clip_vectors_to_boundary(
+    gdf: gpd.GeoDataFrame,
+    boundary: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
+    """
+    Clip vector geometries to a boundary polygon.
+    
+    Parameters
+    ----------
+    gdf : gpd.GeoDataFrame
+        Input vector data (e.g., buildings, roads)
+    boundary : gpd.GeoDataFrame
+        Boundary polygon (e.g., district border)
+    
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Clipped geometries
+    """
+    # ensure crs match
+    if gdf.crs != boundary.crs:
+        boundary = boundary.to_crs(gdf.crs)
+        
+    # clip
+    clipped = gpd.clip(gdf, boundary)
+    
+    return clipped
 
 
 # ============================================================

@@ -9,6 +9,50 @@ import numpy as np
 import xarray as xr
 from scipy.ndimage import uniform_filter, gaussian_filter
 from typing import Union, Optional, Tuple
+import geopandas as gpd
+from shapely.geometry import mapping
+
+
+def mask_raster_with_vector(
+    raster: xr.DataArray,
+    vector_gdf: gpd.GeoDataFrame,
+    nodata: float = np.nan
+) -> xr.DataArray:
+    """
+    Mask raster data using vector polygons.
+    Requires 'rioxarray' extension to be loaded.
+    
+    Parameters
+    ----------
+    raster : xr.DataArray
+        Input raster
+    vector_gdf : gpd.GeoDataFrame
+        Vector mask (polygons)
+    nodata : float
+        Value to fill outside mask
+    
+    Returns
+    -------
+    xr.DataArray
+        Masked raster
+    """
+    # ensure crs match
+    if not hasattr(raster, 'rio'):
+        raise AttributeError("DataArray doesn't have rio accesssor. Did you import rioxarray?")
+        
+    if raster.rio.crs != vector_gdf.crs:
+        vector_gdf = vector_gdf.to_crs(raster.rio.crs)
+        
+    # mask
+    masked = raster.rio.clip(
+        vector_gdf.geometry.apply(mapping),
+        vector_gdf.crs,
+        drop=True,
+        invert=False,
+        all_touched=True
+    )
+    
+    return masked
 
 
 def create_extreme_rainfall_mask(

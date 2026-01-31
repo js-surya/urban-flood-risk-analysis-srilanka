@@ -4,18 +4,24 @@ Data Loading Module
 Functions for loading various geospatial datasets:
 - CHIRPS rainfall data (NetCDF)
 - SRTM DEM (GeoTIFF)
-- Google Building footprints (GeoJSON)
 - OpenStreetMap features (Shapefile/GeoPackage)
 """
 
+
+
 import xarray as xr
-import rioxarray  # noqa: F401 - needed for xarray rio accessor
+import rioxarray  # noqa: F401
 import geopandas as gpd
+import pandas as pd
 import numpy as np
+from shapely.geometry import box, shape
 from pathlib import Path
 from typing import Union, Optional, List
 import gzip
 import struct
+import requests
+import json
+import shutil
 
 
 def load_srtm_tiles(
@@ -194,44 +200,75 @@ def load_dem(
     return dem
 
 
-def load_buildings(
+
+def load_osm_buildings(
     filepath: Union[str, Path],
-    bbox: Optional[tuple] = None,
-    confidence_threshold: float = 0.7
+    bbox: Optional[tuple] = None
 ) -> gpd.GeoDataFrame:
     """
-    Load Google Building footprints from GeoJSON.
+    Load buildings from OpenStreetMap/Overpass GeoJSON.
     
     Parameters
     ----------
     filepath : str or Path
-        Path to the buildings GeoJSON file
+        Path to the OSM buildings GeoJSON file
     bbox : tuple, optional
         Bounding box filter (minx, miny, maxx, maxy)
-    confidence_threshold : float
-        Minimum confidence score to include (default: 0.7)
     
     Returns
     -------
     gpd.GeoDataFrame
         Building footprints as polygons
-    
-    Example
-    -------
-    >>> buildings = load_buildings('data/google_buildings_lk.geojson')
-    >>> print(f"Loaded {len(buildings)} buildings")
     """
-    # load with optional bbox filter
-    if bbox is not None:
-        buildings = gpd.read_file(filepath, bbox=bbox)
-    else:
-        buildings = gpd.read_file(filepath)
-    
-    # filter by confidence if column exists
-    if 'confidence' in buildings.columns:
-        buildings = buildings[buildings['confidence'] >= confidence_threshold]
-    
-    return buildings
+    try:
+        if bbox is not None:
+            return gpd.read_file(filepath, bbox=bbox)
+        else:
+            return gpd.read_file(filepath)
+    except Exception:
+        # Fallback for raw Overpass JSON
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            elements = data.get('elements', [])
+            if not elements:
+                return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+                
+            # Convert Overpass elements to GeoDataFrame
+            # Overpass 'way' with 'geometry' (list of lat/lon) -> Polygon
+            from shapely.geometry import Polygon, LineString
+            
+            geoms = []
+            properties = []
+            
+            for el in elements:
+                if 'geometry' in el:
+                    coords = [(pt['lon'], pt['lat']) for pt in el['geometry']]
+                    if len(coords) < 3:
+                        geom = LineString(coords) # Fallback if not closed
+                    else:
+                        geom = Polygon(coords)
+                    
+                    geoms.append(geom)
+                    tags = el.get('tags', {})
+                    properties.append(tags)
+            
+            if not geoms:
+                 return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+                 
+            gdf = gpd.GeoDataFrame(properties, geometry=geoms, crs="EPSG:4326")
+            
+            if bbox:
+                 minx, miny, maxx, maxy = bbox
+                 gdf = gdf.cx[minx:maxx, miny:maxy]
+                 
+            return gdf
+            
+        except Exception as e:
+            print(f"Error parsing OSM JSON: {e}")
+            return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+
 
 
 def load_osm_roads(
@@ -332,13 +369,14 @@ def validate_crs_match(
     return len(set(crs_list)) <= 1
 
 
+
 if __name__ == "__main__":
     # quick test
     print("Data loading module loaded successfully")
     print("Available functions:")
     print("  - load_chirps_data()")
     print("  - load_dem()")
-    print("  - load_buildings()")
+    print("  - load_osm_buildings()")
     print("  - load_osm_roads()")
     print("  - load_admin_boundaries()")
     print("  - validate_crs_match()")

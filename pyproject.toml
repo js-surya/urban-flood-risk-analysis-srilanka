@@ -2,7 +2,10 @@
 name = "urban-flood-risk-analysis"
 version = "0.1.0"
 description = "Urban flood vulnerability assessment for Sri Lanka using CHIRPS rainfall data, Google Building footprints, and raster-vector integration"
-authors = ["Student <student@example.com>"]
+authors = [
+    "Surya Jamuna Rani Subramaniyan <s3664414@student.utwente.nl>",
+    "Sachin Ravi <s3563545@student.utwente.nl>"
+]
 readme = "README.md"
 packages = [{include = "src"}]
 

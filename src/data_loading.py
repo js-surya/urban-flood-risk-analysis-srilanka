@@ -75,6 +75,8 @@ def load_srtm_tiles(
         merged = merged.sel(x=slice(west, east), y=slice(north, south))
     
     merged.name = 'elevation'
+    # Assign CRS (SRTM is always WGS84)
+    merged.rio.write_crs("EPSG:4326", inplace=True)
     return merged
 
 

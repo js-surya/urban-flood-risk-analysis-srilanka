@@ -57,6 +57,12 @@ def load_srtm_tiles(
     merged = merged.sortby('y', ascending=False)
     merged = merged.sortby('x')
     
+    # helper: drop duplicates if any (common with tile overlap)
+    _, index = np.unique(merged['x'], return_index=True)
+    merged = merged.isel(x=index)
+    _, index = np.unique(merged['y'], return_index=True)
+    merged = merged.isel(y=index[::-1]) # Keep descending sort for y
+    
     # Clip to bbox if provided
     if bbox is not None:
         west, south, east, north = bbox

@@ -40,6 +40,9 @@ urban-flood-risk-analysis/
 # install dependencies
 poetry install
 
+# register jupyter kernel
+poetry run python -m ipykernel install --user --name urban-flood-analysis --display-name "Python (Urban Flood Analysis)"
+
 # activate virtual environment
 poetry shell
 
@@ -71,10 +74,15 @@ Run the main analysis notebook:
 ```bash
 poetry run jupyter notebook notebooks/analysis.ipynb
 ```
+### **Important: Selecting the Correct Kernel**
+Once the notebook is open, you **must** select the correct environment to avoid `ModuleNotFoundError` errors:
+1.  Click on the kernel name in the **top-right corner** of the interface (it may say "Python 3" or "Base").
+2.  Select **"Python (Urban Flood Analysis)"** from the list.
+3.  **Troubleshooting:** If you do not see the kernel in the list immediately, please **restart your IDE** (VS Code, Jupyter, etc.) or refresh your browser page to allow the kernel registry to update.
 
 ## Authors
 
-- **Surya Jamuna Rani Subramaniyan** (S3664414)
-- **Sachin Ravi** (S3563545)
+- **Surya Jamuna Rani Subramaniyan** (S-3664414)
+- **Sachin Ravi** (S-3563545)
 
-Scientific Programming for Geospatial Sciences - ITC, University of Twente (2025)
+Course: Scientific Programming for Geospatial Sciences - ITC, University of Twente (2026)

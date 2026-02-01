@@ -132,7 +132,9 @@ def calculate_building_density(
         admin_proj = admin_boundaries
         
     # calculate areas
+    admin_proj = admin_proj.copy()
     admin_proj['area_sqkm'] = admin_proj.geometry.area / 1e6
+    area_lookup = admin_proj[[admin_id_col, 'area_sqkm']]
     
     # join to count
     joined = gpd.sjoin(build_proj, admin_proj[[admin_id_col, 'geometry']], how='left', predicate='within')
@@ -140,8 +142,9 @@ def calculate_building_density(
     
     # merge back
     result = admin_boundaries.merge(counts, on=admin_id_col, how='left')
+    result = result.merge(area_lookup, on=admin_id_col, how='left')
     result['building_count'] = result['building_count'].fillna(0)
-    result['density_per_sqkm'] = result['building_count'] / admin_proj['area_sqkm']
+    result['density_per_sqkm'] = result['building_count'] / result['area_sqkm']
     
     return result
 
@@ -161,8 +164,12 @@ def sample_raster_values(
     if gdf.empty:
         return gdf.assign(**{column_name: []})
 
+    # Normalize raster to xarray with rio accessor
+    if not hasattr(raster, 'rio'):
+        raster = xr.DataArray(raster)
+
     # Ensure CRS match
-    if gdf.crs != raster.rio.crs:
+    if gdf.crs is not None and hasattr(raster, 'rio') and raster.rio.crs is not None and gdf.crs != raster.rio.crs:
         gdf = gdf.to_crs(raster.rio.crs)
         
     # Get centroids

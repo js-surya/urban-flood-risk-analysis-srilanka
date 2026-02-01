@@ -56,8 +56,7 @@ poetry run python -m src.data_loading
 This project uses:
 - **CHIRPS v2.0** - Rainfall data (0.05° resolution)
 - **SRTM DEM** - Elevation data (30m resolution)
-- **Google Open Buildings** - Building footprints
-- **OpenStreetMap** - Roads and administrative boundaries
+- **OpenStreetMap** - Building footprints, roads, and administrative boundaries
 
 See `data/README.md` for download instructions.
 

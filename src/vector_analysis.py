@@ -171,30 +171,42 @@ def sample_raster_values(
     # Ensure CRS match
     if gdf.crs is not None and hasattr(raster, 'rio') and raster.rio.crs is not None and gdf.crs != raster.rio.crs:
         gdf = gdf.to_crs(raster.rio.crs)
+    
+    # Convert DataArray to numpy array and get affine transform
+    if hasattr(raster, 'rio'):
+        # It's a rioxarray DataArray
+        data = raster.values
         
-    # Get centroids
-    # Note: For efficiency with large datasets, we use coords directly
-    centroids = gdf.geometry.centroid
-    x_coords = xr.DataArray([p.x for p in centroids], dims="z")
-    y_coords = xr.DataArray([p.y for p in centroids], dims="z")
-    
-    # Sample using xarray nearest neighbor
-    # We clip coords to raster bounds to avoid index errors
-    # (Checking bounds is a good safety step in real apps)
-    
-    sampled = raster.sel(x=x_coords, y=y_coords, method='nearest')
-    
-    # If sampled is a scalar (broadcast), expand to match gdf length
-    values = sampled.values
-    if values.ndim == 0 or (values.ndim == 1 and values.shape[0] == 1):
-        values = np.full(len(gdf), float(values))
-    elif values.shape[0] != len(gdf):
-        # Align length manually
-        values = np.asarray(values).ravel()
-        if values.size == 1:
-            values = np.full(len(gdf), values.item())
+        # Build affine transform from coordinates
+        coords = raster.coords
+        if 'longitude' in coords and 'latitude' in coords:
+            lons = coords['longitude'].values
+            lats = coords['latitude'].values
+        elif 'x' in coords and 'y' in coords:
+            lons = coords['x'].values
+            lats = coords['y'].values
         else:
-            values = np.resize(values, len(gdf))
+            raise ValueError(f"Raster must have either ('x', 'y') or ('longitude', 'latitude') coordinates. Found: {list(coords.keys())}")
+        
+        res_x = abs(float(lons[1] - lons[0])) if len(lons) > 1 else 0.01
+        res_y = abs(float(lats[1] - lats[0])) if len(lats) > 1 else 0.01
+        
+        from rasterio.transform import from_origin
+        minx, maxx = float(lons.min()), float(lons.max())
+        miny, maxy = float(lats.min()), float(lats.max())
+        
+        # Handle north-up vs south-up
+        if lats[0] < lats[-1]:  # South-up
+            data = data[::-1, :]
+            transform = from_origin(minx, maxy, res_x, res_y)
+        else:  # North-up
+            transform = from_origin(minx, maxy, res_x, res_y)
+        
+        # Use point_query from rasterstats for point sampling
+        from rasterstats import point_query
+        values = [point_query(pt, data, affine=transform, nodata=-9999) for pt in gdf.geometry]
+    else:
+        raise TypeError("Raster must be an xarray DataArray with rio accessor")
     
     gdf = gdf.copy()
     gdf[column_name] = values

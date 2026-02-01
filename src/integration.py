@@ -25,7 +25,7 @@ from pathlib import Path
 
 def extract_zonal_statistics(
     vector: gpd.GeoDataFrame,
-    raster_path: Union[str, Path],
+    raster_path: Union[str, Path, xr.DataArray],
     stats: List[str] = ['mean', 'max', 'min', 'std'],
     prefix: str = ''
 ) -> gpd.GeoDataFrame:
@@ -36,8 +36,8 @@ def extract_zonal_statistics(
     ----------
     vector : gpd.GeoDataFrame
         Polygon features for zonal analysis
-    raster_path : str or Path
-        Path to raster file
+    raster_path : str, Path, or xr.DataArray
+        Path to raster file or xarray DataArray
     stats : list
         Statistics to calculate (options: mean, max, min, std, count, sum, median, etc.)
     prefix : str
@@ -55,27 +55,73 @@ def extract_zonal_statistics(
     ...     stats=['mean', 'max'], prefix='rainfall_'
     ... )
     >>> # districts now has 'rainfall_mean' and 'rainfall_max' columns
+    >>> # Or with a DataArray:
+    >>> dist_da = xr.DataArray(dist_to_water, coords=water_raster.coords, dims=water_raster.dims)
+    >>> districts = extract_zonal_statistics(
+    ...     districts, dist_da,
+    ...     stats=['mean'], prefix='proximity_'
+    ... )
     """
-    raster_path = Path(raster_path)
-
-    # Open raster once to grab CRS/bounds; clip and reproject vector to avoid zero-sized windows
-    with rasterio.open(raster_path) as src:
-        raster_crs = src.crs
-        bounds = src.bounds
-        data = src.read(1)
-        res_x = abs(src.transform.a)
-        res_y = abs(src.transform.e)
-        nodata = src.nodata if src.nodata is not None else -9999
-
-        # Normalize bounds so min < max
-        minx, maxx = sorted([bounds.left, bounds.right])
-        miny, maxy = sorted([bounds.bottom, bounds.top])
-
-        # If raster is south-up (positive y pixel size), flip to north-up for rasterstats
+    # Handle DataArray input
+    if isinstance(raster_path, xr.DataArray):
+        raster_da = raster_path
+        raster_crs = raster_da.rio.crs if hasattr(raster_da, 'rio') else None
+        data = raster_da.values
+        nodata = -9999  # Default nodata value for DataArray
+        
+        # Get affine transform from coordinates
+        coords = raster_da.coords
+        if 'latitude' in coords and 'longitude' in coords:
+            lons = coords['longitude'].values
+            lats = coords['latitude'].values
+        elif 'y' in coords and 'x' in coords:
+            lons = coords['x'].values
+            lats = coords['y'].values
+        else:
+            raise ValueError("DataArray must have latitude/longitude or x/y coordinates")
+        
+        # Build transform
+        res_x = abs(float(lons[1] - lons[0])) if len(lons) > 1 else 0.01
+        res_y = abs(float(lats[1] - lats[0])) if len(lats) > 1 else 0.01
+        
         from rasterio.transform import from_origin
-        if src.transform.e > 0:
+        minx, maxx = float(lons.min()), float(lons.max())
+        miny, maxy = float(lats.min()), float(lats.max())
+        
+        # Handle both north-up and south-up orientations
+        if lats[0] < lats[-1]:  # South-up (ascending)
             data = data[::-1, :]
-        transform = from_origin(minx, maxy, res_x, res_y)
+            transform = from_origin(minx, maxy, res_x, res_y)
+        else:  # North-up (descending)
+            transform = from_origin(minx, maxy, res_x, res_y)
+        
+        if raster_crs is None:
+            raster_crs = 'EPSG:4326'  # Default to WGS84
+        
+        bounds_minx, bounds_maxx = minx, maxx
+        bounds_miny, bounds_maxy = miny, maxy
+    else:
+        # Handle file path input (existing logic)
+        raster_path = Path(raster_path)
+
+        # Open raster once to grab CRS/bounds; clip and reproject vector to avoid zero-sized windows
+        with rasterio.open(raster_path) as src:
+            raster_crs = src.crs
+            bounds = src.bounds
+            data = src.read(1)
+            res_x = abs(src.transform.a)
+            res_y = abs(src.transform.e)
+            nodata = src.nodata if src.nodata is not None else -9999
+
+            # Normalize bounds so min < max
+            bounds_minx, bounds_maxx = sorted([bounds.left, bounds.right])
+            bounds_miny, bounds_maxy = sorted([bounds.bottom, bounds.top])
+
+            # If raster is south-up (positive y pixel size), flip to north-up for rasterstats
+            from rasterio.transform import from_origin
+            if src.transform.e > 0:
+                data = data[::-1, :]
+            transform = from_origin(bounds_minx, bounds_maxy, res_x, res_y)
 
     gdf = vector.copy()
 
@@ -85,7 +131,7 @@ def extract_zonal_statistics(
 
     # Clip geometries to raster extent to prevent empty windows
     from shapely.geometry import box
-    raster_bounds_geom = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs=raster_crs)
+    raster_bounds_geom = gpd.GeoSeries([box(bounds_minx, bounds_miny, bounds_maxx, bounds_maxy)], crs=raster_crs)
     gdf = gpd.clip(gdf, raster_bounds_geom)
     gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notnull()]
 
@@ -218,8 +264,8 @@ def assign_raster_classes(
 
 def rasterize_vector(
     vector: gpd.GeoDataFrame,
-    value_column: str,
-    resolution: Tuple[float, float],
+    value_column: Optional[str] = None,
+    resolution: Tuple[float, float] = (-0.01, 0.01),
     bounds: Optional[Tuple[float, float, float, float]] = None,
     fill_value: float = 0,
     dtype: str = 'float32'
@@ -231,8 +277,8 @@ def rasterize_vector(
     ----------
     vector : gpd.GeoDataFrame
         Input vector features
-    value_column : str
-        Column containing values to rasterize
+    value_column : str, optional
+        Column containing values to rasterize. If None, creates a binary mask (1 where features exist).
     resolution : tuple
         Output resolution as (x_res, y_res), typically (-res, res)
     bounds : tuple, optional
@@ -253,7 +299,18 @@ def rasterize_vector(
     ...     districts, 'building_density',
     ...     resolution=(-0.01, 0.01)  # ~1km resolution
     ... )
+    >>> water_mask = rasterize_vector(
+    ...     water_bodies, value_column=None,  # Binary mask
+    ...     resolution=(-0.0001, 0.0001)
+    ... )
     """
+    # If no value column specified, create a binary mask
+    if value_column is None:
+        # Add a temporary column with value 1 for all features
+        vector = vector.copy()
+        vector['_mask_'] = 1
+        value_column = '_mask_'
+    
     # make geocube
     cube = make_geocube(
         vector_data=vector,

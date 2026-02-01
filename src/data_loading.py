@@ -348,6 +348,86 @@ def load_osm_roads(
     return roads
 
 
+def load_osm_water(
+    filepath: Union[str, Path],
+    bbox: Optional[tuple] = None
+) -> gpd.GeoDataFrame:
+    """
+    Load water bodies from OpenStreetMap/Overpass GeoJSON.
+    
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the OSM water bodies GeoJSON file
+    bbox : tuple, optional
+        Bounding box filter (minx, miny, maxx, maxy)
+    
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Water body features (rivers, canals, lakes) as polygons/linestrings
+    """
+    try:
+        if bbox is not None:
+            return gpd.read_file(filepath, bbox=bbox)
+        else:
+            return gpd.read_file(filepath)
+    except Exception:
+        # Fallback for raw Overpass JSON
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            elements = data.get('elements', [])
+            if not elements:
+                return gpd.GeoDataFrame(columns=['geometry', 'waterway', 'natural'], crs="EPSG:4326")
+                
+            # Convert Overpass elements to GeoDataFrame
+            from shapely.geometry import Polygon, LineString
+            
+            geoms = []
+            properties = []
+            
+            for el in elements:
+                if 'geometry' in el:
+                    coords = [(pt['lon'], pt['lat']) for pt in el['geometry']]
+                    if len(coords) < 2:
+                        continue
+                    
+                    # Waterways are typically LineStrings, water bodies can be Polygons
+                    tags = el.get('tags', {})
+                    if 'waterway' in tags and len(coords) >= 2:
+                        # River, canal, stream - LineString
+                        geom = LineString(coords)
+                    elif len(coords) >= 3 and coords[0] == coords[-1]:
+                        # Closed polygon - lake, reservoir
+                        geom = Polygon(coords)
+                    elif len(coords) >= 3:
+                        # Try to close it for water bodies
+                        geom = Polygon(coords)
+                    else:
+                        geom = LineString(coords)
+                    
+                    geoms.append(geom)
+                    tags['water_id'] = el.get('id', 0)
+                    properties.append(tags)
+            
+            if not geoms:
+                 return gpd.GeoDataFrame(columns=['geometry', 'waterway', 'natural'], crs="EPSG:4326")
+                 
+            gdf = gpd.GeoDataFrame(properties, geometry=geoms, crs="EPSG:4326")
+            
+            if bbox:
+                 minx, miny, maxx, maxy = bbox
+                 gdf = gdf.cx[minx:maxx, miny:maxy]
+                 
+            return gdf
+            
+        except Exception as e:
+            print(f"Error parsing OSM water JSON: {e}")
+            return gpd.GeoDataFrame(columns=['geometry', 'waterway', 'natural'], crs="EPSG:4326")
+
+
 def load_admin_boundaries(
     filepath: Union[str, Path],
     level: Optional[str] = None
@@ -424,43 +504,79 @@ def download_file(url: str, dest_path: Path):
             f.write(chunk)
 
 
-def download_osm_buildings(
-    bbox: dict,
-    output_path: Union[str, Path]
-) -> gpd.GeoDataFrame:
-    """
-    Download buildings from Overpass API and save to disk.
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    overpass_url = "https://overpass-api.de/api/interpreter"
-    query = f"""
-    [out:json][timeout:180];
-    (
-      way["building"]({bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']});
-      relation["building"]({bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']});
-    );
-    out geom;
-    """
-    print(f"Requesting Buildings from Overpass API...")
-    try:
-        response = requests.post(overpass_url, data={'data': query}, timeout=300)
-        response.raise_for_status()
-        
-        # Save Raw JSON
-        with open(output_path, 'w') as f:
-            json.dump(response.json(), f)
-            
-        print(f"Downloaded raw buildings to {output_path}")
-        
-        # Load it
-        return load_osm_buildings(output_path)
-        
-    except Exception as e:
-        print(f"Download failed: {e}")
-        return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+]
 
+def _run_overpass_query(query: str, initial_timeout: int = 180) -> dict:
+    """
+    Run an Overpass query with automatic retries and endpoint cycling.
+    
+    Parameters
+    ----------
+    query : str
+        The Overpass QL query string
+    initial_timeout : int
+        Initial timeout for the request
+        
+    Returns
+    -------
+    dict
+        Parsed JSON response or empty elements dict if all fail
+    """
+    import time
+    import random
+
+    # Ensure query has its own [timeout:...] if not present
+    # But usually we'll build it in the caller
+    
+    max_retries = 2
+    for endpoint in OVERPASS_ENDPOINTS:
+        for attempt in range(max_retries + 1):
+            # Calculate actual timeout for this attempt
+            current_timeout = initial_timeout + (attempt * 60)
+            
+            try:
+                print(f"  Trying Overpass mirror: {endpoint} (Attempt {attempt+1}/{max_retries+1})...")
+                response = requests.post(
+                    endpoint, 
+                    data={'data': query}, 
+                    timeout=current_timeout + 30
+                )
+                
+                if response.status_code == 429: # Too many requests
+                    print("  Server busy (429). Waiting...")
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data.get('elements'):
+                    # Sometimes they return no elements on error without status code
+                    if 'remark' in data:
+                        print(f"  Server remark: {data['remark']}")
+                        continue
+                
+                return data
+                
+            except requests.exceptions.RequestException as e:
+                print(f"  Attempt {attempt+1} failed at {endpoint}: {e}")
+                if attempt < max_retries:
+                    wait = (attempt + 1) * 3
+                    time.sleep(wait)
+                else:
+                    print(f"  Moving to next mirror...")
+                    break
+            except Exception as e:
+                print(f"  Unexpected error: {e}")
+                break
+                
+    print("CRITICAL: All Overpass mirrors failed.")
+    return {"elements": []}
 
 
 def download_srtm(
@@ -530,6 +646,38 @@ def download_srtm(
         return None
 
 
+def download_osm_buildings(
+    bbox: dict,
+    output_path: Union[str, Path]
+) -> gpd.GeoDataFrame:
+    """
+    Download buildings from Overpass API and save to disk.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    query = f"""
+    [out:json][timeout:180];
+    (
+      way["building"]({bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']});
+      relation["building"]({bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']});
+    );
+    out geom;
+    """
+    print(f"Requesting Buildings from Overpass API...")
+    data = _run_overpass_query(query)
+    
+    if data.get('elements'):
+        with open(output_path, 'w') as f:
+            json.dump(data, f)
+        print(f"Downloaded raw buildings to {output_path}")
+    else:
+        print("Warning: No building data retrieved. Using cache if exists.")
+
+    # Load it (will fallback to cache if data empty but file exists)
+    return load_osm_buildings(output_path)
+
+
 def download_osm_roads(
     bbox: dict,
     output_path: Union[str, Path],
@@ -537,25 +685,10 @@ def download_osm_roads(
 ) -> gpd.GeoDataFrame:
     """
     Download OSM roads via Overpass and save to disk.
-
-    Parameters
-    ----------
-    bbox : dict
-        Bounding box with keys west, east, south, north
-    output_path : str or Path
-        Destination JSON path
-    highway_types : list, optional
-        Filter highway tags (e.g., ['primary','secondary'])
-
-    Returns
-    -------
-    gpd.GeoDataFrame
-        Roads as LineStrings
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    overpass_url = "https://overpass-api.de/api/interpreter"
     # build type filter
     type_filter = ""
     if highway_types:
@@ -573,19 +706,16 @@ def download_osm_roads(
     out geom;
     """
     print("Requesting roads from Overpass API...")
-    try:
-        response = requests.post(overpass_url, data={'data': query}, timeout=600)
-        response.raise_for_status()
-        data = response.json()
-
+    data = _run_overpass_query(query, initial_timeout=360)
+    
+    if data.get('elements'):
         with open(output_path, 'w') as f:
             json.dump(data, f)
-
         print(f"Downloaded raw roads to {output_path}")
-        return load_osm_roads(output_path)
-    except Exception as e:
-        print(f"Download failed: {e}")
-        return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+    else:
+        print("Warning: No road data retrieved. Using cache if exists.")
+
+    return load_osm_roads(output_path)
 
 if __name__ == "__main__":
     # quick test

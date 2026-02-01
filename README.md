@@ -61,6 +61,13 @@ This project uses:
 
 See `data/README.md` for download instructions.
 
+> **Note:** Some large files are excluded from this repository to stay within GitHub's file size limits:
+> *   `data/raw/buildings/osm_buildings.json` (~171 MB)
+> *   `outputs/colombo_interactive_risk.html` (~241 MB)
+> *   `outputs/colombo_interactive_risk_polygons.html` (~338 MB)
+>
+> These files will be generated locally when you run the notebook.
+
 ## Technical Components
 
 1. **NumPy Arrays** - Raster masking, normalization, threshold analysis
